@@ -1,0 +1,110 @@
+name: Build LibXray.xcframework
+
+on:
+  push:
+    branches: [ 'feat/memory-control-45mb' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: self-hosted
+    env:
+      XRAY_CORE_BRANCH: feat/distro-minimal-build88
+    steps:
+      - name: Checkout libXray
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        run: |
+          export PATH="$HOME/go-sdk/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+          if command -v go &>/dev/null; then
+            GO_VER=$(go version | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            if [ "$(printf '%s\n' "1.26" "$GO_VER" | sort -V | head -1)" = "1.26" ]; then
+              echo "Go $GO_VER is sufficient"
+              echo "$HOME/go-sdk/bin" >> $GITHUB_PATH
+              echo "$HOME/go/bin" >> $GITHUB_PATH
+              echo "/usr/local/go/bin" >> $GITHUB_PATH
+              exit 0
+            fi
+          fi
+          echo "Installing Go 1.26..."
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then GOARCH="arm64"; else GOARCH="amd64"; fi
+          curl -sL "https://go.dev/dl/go1.26.0.darwin-${GOARCH}.tar.gz" -o /tmp/go.tar.gz
+          rm -rf "$HOME/go-sdk"
+          mkdir -p "$HOME/go-sdk"
+          tar -C "$HOME/go-sdk" --strip-components=1 -xzf /tmp/go.tar.gz
+          rm /tmp/go.tar.gz
+          echo "$HOME/go-sdk/bin" >> $GITHUB_PATH
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+          go version
+
+      - name: Install gomobile
+        run: |
+          export PATH="$HOME/go-sdk/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Clone Xray-core fork
+        run: |
+          rm -rf ../Xray-core-libXray
+          git clone --depth 1 --branch $XRAY_CORE_BRANCH \
+            https://github.com/truvvor/Xray-core.git ../Xray-core-libXray
+
+      - name: Setup Go modules
+        run: |
+          export PATH="$HOME/go-sdk/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+          # Reinit go.mod with replace directive pointing to local Xray-core
+          rm -f go.mod go.sum
+          go mod init github.com/xtls/libxray
+          go mod edit -replace github.com/xtls/xray-core=../Xray-core-libXray
+          go mod tidy
+          # Add gomobile dependency
+          go get golang.org/x/mobile/cmd/gomobile
+          go get google.golang.org/genproto
+
+      - name: Verify Go build
+        run: |
+          export PATH="$HOME/go-sdk/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+          go build $(go list ./... | grep -v build/template | grep -v download_geo | grep -v desktop_bin)
+          echo "Go build: OK"
+
+      - name: Build LibXray.xcframework
+        run: |
+          export PATH="$HOME/go-sdk/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+          rm -rf LibXray.xcframework
+          gomobile bind \
+            -target=ios,macos \
+            -iosversion=15.0 \
+            -ldflags="-s -w" \
+            -o LibXray.xcframework \
+            .
+          echo "=== Build complete ==="
+          ls -la LibXray.xcframework/
+
+      - name: Verify exports
+        run: |
+          echo "=== Checking LibXrayFreeOSMemory export ==="
+          nm -gU LibXray.xcframework/ios-arm64/LibXray.framework/LibXray \
+            | grep -i FreeOSMemory || echo "WARNING: FreeOSMemory not found in ios-arm64"
+          nm -gU LibXray.xcframework/macos-arm64_x86_64/LibXray.framework/LibXray \
+            | grep -i FreeOSMemory || echo "WARNING: FreeOSMemory not found in macos"
+          echo "=== Binary size ==="
+          ls -lh LibXray.xcframework/ios-arm64/LibXray.framework/LibXray
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibXray.xcframework
+          path: LibXray.xcframework/
+          retention-days: 30
+
+      - name: Restore go.mod
+        if: always()
+        run: |
+          export PATH="$HOME/go-sdk/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"
+          rm -f go.mod go.sum
+          go mod init github.com/xtls/libxray
+          go mod tidy 2>/dev/null || true
+          rm -rf ../Xray-core-libXray
