@@ -9,9 +9,8 @@ import (
 )
 
 const (
-	interval = 1
-	// 30M
-	maxMemory = 30 * 1024 * 1024
+	interval  = 30
+	maxMemory = 45 * 1024 * 1024
 )
 
 func forceFree(interval time.Duration) {
@@ -24,7 +23,7 @@ func forceFree(interval time.Duration) {
 }
 
 func InitForceFree() {
-	debug.SetGCPercent(10)
+	debug.SetGCPercent(50)
 	debug.SetMemoryLimit(maxMemory)
 	duration := time.Duration(interval) * time.Second
 	forceFree(duration)
